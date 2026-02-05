@@ -1,50 +1,50 @@
 # 探针实验
 
-基于 Qwen3-0.6B 与 MSRA NER 的**线性探针**实验，用于分析各层表示对命名实体识别任务的编码能力。
+基于 Qwen3-0.6B 的**线性探针**实验，统一入口适配 `dataset/` 下各类数据。
 
-## 核心流程
+## 支持数据集
 
-1. **冻结目标模型**：Qwen3 仅前向传播，不更新参数  
-2. **提取层表示**：对每个样本提取指定层的 token 表示（hidden states）  
-3. **标签对齐**：MSRA 为字符级标注，通过 `offset_mapping` 对齐到子词 token  
-4. **独立训练探针**：每层一个线性分类器，输入 1024 维，输出 7 类 NER 标签  
-5. **Z-score 归一化**：训练集统计量归一化，测试集复用，保证层间可比性  
+| 名称 | 类型 | 说明 |
+|------|------|------|
+| msra | token | MSRA NER，中文命名实体识别 |
+| chnsenti | sentence | ChnSentiCorp，中文情感 |
+| imdb | sentence | IMDB，英文电影评论情感 |
+| sst2 | sentence | SST-2，英文情感 |
+| mrpc | sentence | MRPC，句对同义判断 |
+| commonsense_qa | sentence | CommonsenseQA，英文常识推理 5 选 1 |
+| csqa | sentence | CSQA，中文常识推理 5 选 1 |
 
-## 环境
-
-```bash
-pip install -r requirements.txt
-```
-
-## 运行
-
-**完整实验**（28 层 + embedding，耗时较长）：
+## 统一运行（推荐）
 
 ```bash
-python -m probe.main
+# 列出可用数据集
+python -m probe.run --list
+
+# 指定数据集运行
+python -m probe.run --dataset msra
+python -m probe.run --dataset chnsenti
+python -m probe.run --dataset imdb
+python -m probe.run --dataset sst2
+python -m probe.run --dataset mrpc
+python -m probe.run --dataset commonsense_qa
+python -m probe.run --dataset csqa
+
+# 快速验证
+python -m probe.run -d imdb --layers "5" --max_train 500 --epochs 10
 ```
 
-**快速验证**（仅 5 层，约 2000 训练句）：
-
-```bash
-python -m probe.main --layers "0,7,14,21,28" --max_train 500 --max_test 200 --epochs 20
-```
-
-**常用参数**：
+## 常用参数
 
 | 参数 | 默认 | 说明 |
 |------|------|------|
-| `--model_path` | Qwen3-0.6B | 模型目录 |
-| `--train_file` | dataset/MSRA命名实体识别数据集/train.txt | 训练集 |
-| `--test_file` | dataset/MSRA命名实体识别数据集/test.txt | 测试集 |
-| `--max_train` | 2000 | 最大训练句子数 |
-| `--max_test` | 500 | 最大测试句子数 |
-| `--layers` | all | 层索引，如 `5,10,15` 或 `all` |
-| `--epochs` | 50 | 探针训练轮数 |
-| `--lr` | 1e-3 | 学习率 |
-| `--no_normalize` | - | 关闭 Z-score 归一化 |
+| `-d` / `--dataset` | 必填 | 数据集名称 |
+| `--data_dir` | 自动 | 覆盖数据目录 |
+| `--max_train` | 2000 | 最大训练样本数 |
+| `--max_test` | 500 | 最大测试样本数 |
+| `--layers` | all | 层索引，如 `5,10,15` |
+| `--extract_batch_size` | 16 | 提取表示时的 batch，显存不足可调小 |
+| `--device` | 自动 | 指定 CUDA 卡，如 cuda:0 |
 
 ## 输出
 
-- 终端：每层训练 loss 与 Train/Test 准确率  
-- `probe_results.txt`：汇总结果表格  
+结果保存为 `probe_results_{数据集名}.txt`，可用 `-o` 指定路径。

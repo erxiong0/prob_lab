@@ -49,7 +49,7 @@ def extract_and_stack(
     对所有样本提取指定层的表示，并堆叠为 (N, hidden_dim) 和 (N,) 标签。
     同时做 Z-score 归一化（可选）。
     """
-    from .extractor import extract_hidden_states, get_layer_representations
+    from .extractor import extract_single_layer
 
     all_reprs = []
     all_labels = []
@@ -74,8 +74,7 @@ def extract_and_stack(
             input_ids = torch.tensor(padded_ids, dtype=torch.long, device=device)
             attention_mask = torch.tensor(padded_mask, dtype=torch.long, device=device)
 
-            hidden_states = extract_hidden_states(model, input_ids, attention_mask)
-            layer_repr = get_layer_representations(hidden_states, layer_idx)
+            layer_repr = extract_single_layer(model, input_ids, layer_idx, attention_mask)
             # layer_repr: (batch, seq_len, hidden_dim)
 
             labels_batch = torch.tensor(padded_labels, dtype=torch.long, device=device)
@@ -102,6 +101,57 @@ def extract_and_stack(
             norm_stats = (mean.detach().cpu(), std.detach().cpu())
         reprs = (reprs.float() - mean) / std
 
+    return reprs, labels, norm_stats
+
+
+def extract_and_stack_sentence(
+    model,
+    samples: List,
+    layer_idx: int,
+    device: torch.device,
+    batch_size: int = 16,
+    normalize: bool = True,
+    pad_token_id: int = 0,
+    norm_mean: Optional[torch.Tensor] = None,
+    norm_std: Optional[torch.Tensor] = None,
+) -> Tuple[torch.Tensor, torch.Tensor, Optional[Tuple[torch.Tensor, torch.Tensor]]]:
+    """句子级探针：取每句最后一个非 padding token 的表示。samples 需有 .input_ids, .attention_mask, .label"""
+    from .extractor import extract_single_layer
+
+    all_reprs, all_labels = [], []
+    model.eval()
+    with torch.no_grad():
+        for i in range(0, len(samples), batch_size):
+            if hasattr(torch.cuda, "empty_cache"):
+                torch.cuda.empty_cache()
+            batch_samples = samples[i : i + batch_size]
+            max_len = max(len(s.input_ids) for s in batch_samples)
+            padded_ids = [s.input_ids + [pad_token_id] * (max_len - len(s.input_ids)) for s in batch_samples]
+            padded_mask = [s.attention_mask + [0] * (max_len - len(s.attention_mask)) for s in batch_samples]
+            input_ids = torch.tensor(padded_ids, dtype=torch.long, device=device)
+            attention_mask = torch.tensor(padded_mask, dtype=torch.long, device=device)
+
+            layer_repr = extract_single_layer(model, input_ids, layer_idx, attention_mask)
+            for j, s in enumerate(batch_samples):
+                seq_len = sum(s.attention_mask)
+                last_idx = seq_len - 1 if seq_len > 0 else 0
+                all_reprs.append(layer_repr[j, last_idx])
+                all_labels.append(s.label)
+
+    if not all_reprs:
+        return torch.zeros(0, model.config.hidden_size, device=device), torch.zeros(0, dtype=torch.long, device=device), None
+
+    reprs = torch.stack(all_reprs, dim=0)
+    labels = torch.tensor(all_labels, dtype=torch.long, device=device)
+    norm_stats = None
+    if normalize and len(reprs) > 0:
+        if norm_mean is not None and norm_std is not None:
+            mean, std = norm_mean.to(device), norm_std.to(device)
+        else:
+            mean = reprs.float().mean(dim=0)
+            std = reprs.float().std(dim=0) + 1e-8
+            norm_stats = (mean.detach().cpu(), std.detach().cpu())
+        reprs = (reprs.float() - mean) / std
     return reprs, labels, norm_stats
 
 

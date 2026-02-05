@@ -1,7 +1,7 @@
 """
-MSRA NER 数据加载与预处理
-- 解析 MSRA 格式（字符级标注）
-- 与 Qwen3 tokenizer 对齐：字符标签 → 子词标签（首个字符决定标签，特殊 token 标 -100）
+MSRA NER 与 ChnSentiCorp 数据加载与预处理
+- MSRA: token 级 NER，字符标签对齐到子词
+- ChnSentiCorp: 句子级情感分类（正/负）
 """
 import os
 from typing import List, Tuple, Optional
@@ -126,3 +126,91 @@ def prepare_probe_dataset(
             )
         )
     return samples
+
+
+# ============== ChnSentiCorp（句子级情感） ==============
+
+CHNSENTI_NUM_LABELS = 2  # negative=0, positive=1
+
+
+@dataclass
+class ChnSentSample:
+    """ChnSentiCorp 样本：input_ids、attention_mask、句子级标签（0/1）"""
+    input_ids: List[int]
+    attention_mask: List[int]
+    label: int
+    text: str
+
+
+def load_chnsenti(
+    data_dir: str,
+    split: str = "train",
+    max_samples: Optional[int] = None,
+) -> List[Tuple[str, int]]:
+    """
+    加载 ChnSentiCorp parquet 数据。
+    返回 [(text, label), ...]，label: 0=negative, 1=positive
+    """
+    try:
+        import pandas as pd
+    except ImportError:
+        raise ImportError("需要 pyarrow 或 pandas 读取 parquet，请运行: pip install pyarrow pandas")
+
+    # 找到对应 split 的 parquet 文件
+    parquet_dir = os.path.join(data_dir, "data")
+    if not os.path.isdir(parquet_dir):
+        parquet_dir = data_dir
+
+    files = [f for f in os.listdir(parquet_dir) if f.endswith(".parquet")]
+    target = None
+    for f in files:
+        if split in f:
+            target = os.path.join(parquet_dir, f)
+            break
+    if target is None:
+        target = os.path.join(parquet_dir, files[0]) if files else None
+
+    if target is None:
+        raise FileNotFoundError(f"未找到 {split} 对应的 parquet 文件: {data_dir}")
+
+    df = pd.read_parquet(target)
+    # 列名可能为 text/label 或 sentence/label 等
+    text_col = "text" if "text" in df.columns else "sentence" if "sentence" in df.columns else df.columns[0]
+    label_col = "label" if "label" in df.columns else df.columns[1]
+
+    samples = []
+    for _, row in df.iterrows():
+        text = str(row[text_col]).strip()
+        label = int(row[label_col])
+        if not text:
+            continue
+        samples.append((text, label))
+        if max_samples and len(samples) >= max_samples:
+            break
+    return samples
+
+
+def prepare_chnsenti_dataset(
+    tokenizer,
+    samples: List[Tuple[str, int]],
+    max_length: int = 256,
+) -> List[ChnSentSample]:
+    """将 (text, label) 转为 ChnSentSample"""
+    out = []
+    for text, label in samples:
+        enc = tokenizer(
+            text,
+            return_tensors=None,
+            truncation=True,
+            max_length=max_length,
+            add_special_tokens=True,
+        )
+        out.append(
+            ChnSentSample(
+                input_ids=enc["input_ids"],
+                attention_mask=enc["attention_mask"],
+                label=label,
+                text=text,
+            )
+        )
+    return out
